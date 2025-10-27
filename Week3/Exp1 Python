@@ -1,0 +1,99 @@
+import serial
+import matplotlib.pyplot as plt
+import time
+
+# --- CONFIGURATION ---
+# !!! IMPORTANT !!!
+# Update this to your Arduino's COM port.
+# Find it in Arduino IDE > Tools > Port
+# Examples: 'COM3' (Windows), '/dev/ttyACM0' (Linux/Mac)
+COM_PORT = 'COM5'  # <--- CHANGE THIS
+BAUD_RATE = 9600
+# ---------------------
+
+# --- Matplotlib Plot Setup ---
+plt.ion()  # Turn on interactive mode for real-time plotting
+fig, ax = plt.subplots()
+fig.canvas.manager.set_window_title("Potentiometer Real-Time Plot")
+ax.set_xlabel("Time (samples)")
+ax.set_ylabel("Potentiometer Value (0-1023)")
+ax.set_ylim(0, 1050)  # Set Y-axis limit (0-1023, with a little extra room)
+
+x_vals, y_vals = [], []
+line, = ax.plot(x_vals, y_vals, 'r-')  # 'r-' is a red line
+
+
+# ----------------------------
+
+
+def run_plotter():
+    print(f"Connecting to {COM_PORT} at {BAUD_RATE} baud...")
+
+    try:
+        # Connect to Serial port.
+        # The 'timeout=2' means ser.readline() will wait up to 2 seconds
+        # for a new line before timing out.
+        with serial.Serial(COM_PORT, BAUD_RATE, timeout=2) as ser:
+            print(f"Successfully connected to {ser.name}")
+            time.sleep(2)  # Wait for Arduino to reset after connection
+            ser.flushInput()  # Clear any old data in the buffer
+
+            print("Plotting started. Turn the potentiometer.")
+            print("Press Ctrl+C in this terminal to stop.")
+
+            while True:
+                try:
+                    # Read a line from the serial port
+                    # .decode('utf-8') converts bytes to string
+                    # .strip() removes whitespace (like '\r\n')
+                    serial_line = ser.readline().decode('utf-8').strip()
+
+                    if serial_line:  # Check if we got any data
+                        # Convert the string to an integer
+                        pot_value = int(serial_line)
+
+                        # --- Update Plot Data (Part 3) ---
+                        y_vals.append(pot_value)
+                        x_vals.append(len(y_vals))  # X-axis is just the sample number
+
+                        # Update the plot's data
+                        line.set_data(x_vals, y_vals)
+
+                        # Rescale the plot axes
+                        ax.relim()
+                        ax.autoscale_view()
+
+                        # Redraw the plot
+                        fig.canvas.draw()
+                        fig.canvas.flush_events()
+
+                        # Print to console (optional)
+                        # print(f"Potentiometer Value: {pot_value}")
+
+                except ValueError:
+                    print(f"Warning: Could not convert to int. Got: '{serial_line}'")
+                except Exception as e:
+                    print(f"An error occurred: {e}")
+
+    except serial.SerialException as e:
+        print(f"--- ERROR ---")
+        print(f"Failed to connect to {COM_PORT}: {e}")
+        print("Please check the following:")
+        print("1. Is the Arduino plugged in?")
+        print(f"2. Is the COM_PORT variable set correctly to '{COM_PORT}'?")
+        print("3. Is the Arduino IDE's Serial Monitor closed?")
+
+    except KeyboardInterrupt:
+        print("\nPlotting stopped by user (Ctrl+C).")
+
+    finally:
+        plt.ioff()  # Turn off interactive mode
+        print("Serial connection closed. Exiting.")
+        if y_vals:  # If we have data, show the final static plot
+            print("Showing final plot. Close the plot window to exit completely.")
+            plt.show()
+
+
+# --- Run the main function ---
+if __name__ == "__main__":
+    run_plotter()
