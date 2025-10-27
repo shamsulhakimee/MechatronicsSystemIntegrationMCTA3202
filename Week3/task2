@@ -1,0 +1,57 @@
+/*
+  Task 2 - Arduino Code
+  - Reads a potentiometer on pin A0.
+  - Controls a servo motor on pin 9 based on the pot value.
+  - Lights up an LED on pin 7 if the pot value is over 512.
+  - Sends the raw pot value over serial for Python to read.
+*/
+
+// Include the servo library
+#include <Servo.h> 
+
+// --- Define our hardware pins ---
+const int POT_PIN = A0;   // Potentiometer wiper (analog in)
+const int SERVO_PIN = 10;  // Servo signal (PWM)
+const int LED_PIN = 7;    // LED anode (digital out)
+
+// --- Create objects ---
+Servo myServo; // Create a servo object
+
+void setup() {
+  // Initialize Serial communication at 9600 baud
+  Serial.begin(9600); 
+  
+  // Attach the servo to its pin
+  myServo.attach(SERVO_PIN); 
+  
+  // Set the LED pin as an output
+  pinMode(LED_PIN, OUTPUT); 
+}
+
+void loop() {
+  // 1. Read the potentiometer value (range: 0 to 1023)
+  int potValue = analogRead(POT_PIN);
+
+  // 2. Map the pot value to a servo angle (range: 0 to 180)
+  int servoAngle = map(potValue, 0, 1023, 0, 180);
+
+  // 3. Write the angle to the servo
+  myServo.write(servoAngle);
+
+  // 4. Control the LED (Part 2 of Task)
+  // Turn LED ON if pot value is in the upper half ( > 512)
+  if (potValue > 512) {
+    digitalWrite(LED_PIN, HIGH); // Turn LED ON
+  } else {
+    digitalWrite(LED_PIN, LOW);  // Turn LED OFF
+  }
+
+  // 5. Send the raw potentiometer value to Python
+  // We send the raw potValue so the graph plots 0-1023
+  Serial.println(potValue); 
+
+  // 6. Add a small delay
+  // This prevents flooding the serial port and gives the
+  // Python script time to plot. 50ms is a good starting point.
+  delay(50); 
+}
