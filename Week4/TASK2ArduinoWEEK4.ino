@@ -1,11 +1,4 @@
-/*
-  This sketch is for Task 2 (Python-Controlled System).
-  It has been updated to only send MPU data when requested by Python.
-  It listens for:
-  - 'A': Access (Unlock servo, green LED)
-  - 'D': Deny (Lock servo, red LED)
-  - 'G': Gesture (Start sending MPU data, blink green LED)
-*/
+
 
 // --- Include Libraries ---
 #include <SPI.h>
