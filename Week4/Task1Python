@@ -1,0 +1,228 @@
+import serial
+import time
+import matplotlib.pyplot as plt
+from collections import deque
+import numpy as np
+from matplotlib.widgets import Button
+# --- Import type hints to satisfy the linter ---
+from matplotlib.figure import Figure
+from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
+from typing import List, Deque
+
+
+# --- Configuration ---
+# !! CHANGE THIS to your Arduino's COM port
+SERIAL_PORT = 'COM5'
+BAUD_RATE = 9600
+DT = 0.1  # Time step in seconds (matches Arduino delay(100))
+
+
+# We will store the last N points to keep the plot clean
+MAX_POINTS = 100
+x_pos: Deque[float] = deque(maxlen=MAX_POINTS)  # Use deque for efficient pop/append
+y_pos: Deque[float] = deque(maxlen=MAX_POINTS)
+
+
+# --- Physics Variables ---
+vel_x, vel_y = 0.0, 0.0
+pos_x, pos_y = 0.0, 0.0
+ax_offset, ay_offset = 0.0, 0.0
+# --- INCREASED DAMPING TO FIGHT DRIFT ---
+DAMPING = 0.90  # Factor to reduce velocity drift (closer to 1 = less damping)
+
+
+# --- Type hint for ser ---
+ser: serial.Serial
+
+
+print("Connecting to Arduino...")
+try:
+   ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+   time.sleep(2)  # Wait for serial connection
+
+
+   # Read and discard the first few lines
+   for _ in range(5):
+       ser.readline()
+
+
+   print(f"Successfully connected to {SERIAL_PORT}.")
+
+
+except serial.SerialException as e:
+   print(f"Error: Could not open serial port {SERIAL_PORT}.")
+   print(f"Details: {e}")
+   print("Please check the port and ensure Arduino IDE's Serial Monitor is closed.")
+   exit()
+
+
+# --- CALIBRATION ---
+print("\n--- CALIBRATION ---")
+print("Keep the sensor perfectly still for 3 seconds...")
+calib_x: List[float] = []
+calib_y: List[float] = []
+start_time = time.time()
+while time.time() - start_time < 3.0:
+   try:
+       line_data = ser.readline().decode('utf-8').strip()
+       if line_data:
+           parts = line_data.split(',')
+           if len(parts) == 3:
+               calib_x.append(float(parts[0]))
+               calib_y.append(float(parts[1]))
+   # --- Fix for "Too broad exception" warning ---
+   except (UnicodeDecodeError, ValueError, IndexError, serial.SerialException) as e:
+       print(f"Warning during calibration: {e}")
+       continue  # Ignore errors during calibration
+
+
+if not calib_x or not calib_y:
+   print("Calibration failed! No data received. Exiting.")
+   ser.close()
+   exit()
+
+
+ax_offset = np.mean(calib_x)
+ay_offset = np.mean(calib_y)
+print(f"Calibration complete. Offset X: {ax_offset:.2f}, Offset Y: {ay_offset:.2f}")
+print("You can now move the sensor.\n")
+# --- END CALIBRATION ---
+
+
+
+
+# --- Set up the plot ---
+plt.ion()  # Turn on interactive mode
+# --- Add type hints for fig and ax to fix linter warnings ---
+fig: Figure
+ax: Axes
+fig, ax = plt.subplots()
+line: Line2D
+line, = ax.plot(list(x_pos), list(y_pos), 'r-')
+
+
+# Set plot limits - position is relative, so we start at a small range
+# --- Specify named parameters to clear linter confusion ---
+# --- INCREASED THE SCALE ---
+ax.set_xlim(left=-1.0, right=1.0)
+ax.set_ylim(bottom=-1.0, top=1.0)
+ax.set_aspect('equal', 'box')  # Make the plot square
+
+
+ax.set_xlabel("X-Position (m)")
+ax.set_ylabel("Y-Position (m)")
+ax.set_title("Real-Time MPU6050 Position Plot")
+ax.grid()
+
+
+
+
+# Add a "Reset Position" button
+# --- Fix for "unused 'event'" warning ---
+def reset_position(_event):
+   """Callback function to reset the plot and physics variables."""
+   global pos_x, pos_y, vel_x, vel_y
+   pos_x, pos_y, vel_x, vel_y = 0.0, 0.0, 0.0, 0.0
+   x_pos.clear()
+   y_pos.clear()
+   print("--- Position Reset ---")
+
+
+
+
+# --- Fix for linter warning by using a TUPLE () instead of a LIST [] ---
+ax_button: Axes = plt.axes((0.8, 0.0, 0.15, 0.05))  # [left, bottom, width, height]
+reset_btn = Button(ax_button, 'Reset')
+reset_btn.on_clicked(reset_position)
+
+
+try:
+   while True:
+       try:
+           line_data = ser.readline().decode('utf-8').strip()
+       except (UnicodeDecodeError, serial.SerialException):
+           # This can happen if the Arduino disconnects
+           print("Warning: Skipping bad serial data.")
+           continue
+
+
+       if line_data:
+           try:
+               # We are receiving 3 values (ax, ay, az)
+               parts = line_data.split(',')
+               if len(parts) == 3:
+                   # 1. Get calibrated acceleration
+                   ax_calibrated = float(parts[0]) - ax_offset
+                   ay_calibrated = float(parts[1]) - ay_offset
+
+
+                   # 2. Integrate to get velocity
+                   vel_x += ax_calibrated * DT
+                   vel_y += ay_calibrated * DT
+
+
+                   # 3. Apply damping to velocity to fight drift
+                   vel_x *= DAMPING
+                   vel_y *= DAMPING
+
+
+                   # 4. Integrate to get position
+                   pos_x += vel_x * DT
+                   pos_y += vel_y * DT
+
+
+                   # Append new position data
+                   x_pos.append(pos_x)
+                   y_pos.append(pos_y)
+
+
+                   # Update the plot data
+                   line.set_xdata(list(x_pos))
+                   line.set_ydata(list(y_pos))
+
+
+                   # --- Auto-scaling the plot ---
+                   # --- Add comments to suppress "typo" warnings ---
+                   # noinspection PyTypeChecker
+                   xlims = ax.get_xlim()  # linter:ignore
+                   # noinspection PyTypeChecker
+                   ylims = ax.get_ylim()  # linter:ignore
+
+
+                   if pos_x > xlims[1] or pos_x < xlims[0] or \
+                           pos_y > ylims[1] or pos_y < ylims[0]:
+                       ax.relim()
+                       ax.autoscale_view()
+
+
+                   # Redraw the canvas
+                   fig.canvas.draw()
+                   fig.canvas.flush_events()
+
+
+               else:
+                   print(f"Skipping malformed data: {line_data}")
+
+
+           except (ValueError, IndexError):
+               print(f"Skipping invalid data: {line_data}")
+
+
+       plt.pause(0.01)  # Short pause to allow plot to update
+
+
+except KeyboardInterrupt:
+   print("\nProgram terminated by user.")
+except Exception as e:
+   # Catch other potential crashes (like plot window being closed)
+   print(f"\nAn unexpected error occurred: {e}")
+finally:
+   if 'ser' in locals() and ser.is_open:
+       ser.close()
+       print("Serial port closed.")
+   plt.ioff()  # Turn off interactive mode
+   plt.show()  # Keep the final plot window open
+   print("Plot window closed.")
+
+
