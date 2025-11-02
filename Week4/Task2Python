@@ -1,0 +1,149 @@
+import serial
+import time
+
+
+# --- Configuration ---
+# !! CHANGE THIS to your Arduino's COM port
+SERIAL_PORT = 'COM5'
+BAUD_RATE = 9600
+AUTHORIZED_UIDS = ["4305CAF7"]  # Your authorized token
+GESTURE_THRESHOLD = 1.5  # Gyro Z-axis threshold (rad/s)
+GESTURE_TIMEOUT = 5.0  # 5 seconds to perform the gesture
+UNLOCK_DURATION = 5.0  # 5 seconds to keep the lock open
+
+
+# --- State Machine Variables ---
+STATE_WAITING_FOR_UID = "STATE_WAITING_FOR_UID"
+STATE_WAITING_FOR_GESTURE = "STATE_WAITING_FOR_GESTURE"
+STATE_UNLOCKED = "STATE_UNLOCKED"
+currentState = STATE_WAITING_FOR_UID
+
+
+gesture_timeout_start = 0.0
+unlock_start_time = 0.0
+
+
+
+
+def main():
+   global currentState, gesture_timeout_start, unlock_start_time
+
+
+   print("Connecting to Arduino...")
+   try:
+       ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+       time.sleep(2)  # Wait for serial connection
+
+
+       # Read Arduino's startup message
+       startup_message = ser.readline().decode('utf-8').strip()
+       print(f"Arduino says: {startup_message}")
+
+
+       print("System is armed. Waiting for RFID token...")
+
+
+   except serial.SerialException as e:
+       print(f"Error: Could not open serial port {SERIAL_PORT}.")
+       print(f"Details: {e}")
+       print("Please check the port and ensure Arduino IDE's Serial Monitor is closed.")
+       return
+
+
+   try:
+       while True:
+           # --- 1. CHECK FOR TIMEOUTS (applies every loop) ---
+
+
+           # Check for gesture timeout
+           if currentState == STATE_WAITING_FOR_GESTURE and (time.time() - gesture_timeout_start > GESTURE_TIMEOUT):
+               print("Gesture timeout. ACCESS DENIED.")
+               ser.write(b'D')  # Send 'D' for Deny
+               currentState = STATE_WAITING_FOR_UID  # Reset state
+               print("\nSystem re-armed. Waiting for RFID token...")
+
+
+           # Check for unlock duration timeout
+           if currentState == STATE_UNLOCKED and (time.time() - unlock_start_time > UNLOCK_DURATION):
+               print(f"Lock open for {UNLOCK_DURATION}s. Relocking...")
+               ser.write(b'D')  # Send 'D' to relock
+               currentState = STATE_WAITING_FOR_UID  # Reset state
+               print("\nSystem re-armed. Waiting for RFID token...")
+
+
+           # --- 2. READ DATA FROM ARDUINO ---
+           try:
+               line = ser.readline().decode('utf-8').strip()
+           except UnicodeDecodeError:
+               continue  # Ignore bad serial data
+
+
+           # --- 3. PROCESS DATA (only if we received any) ---
+           if line:
+
+
+               # --- State 1: Waiting for UID ---
+               if currentState == STATE_WAITING_FOR_UID:
+                   if line.startswith("UID:"):
+                       uid = line.split(":")[1].upper()
+                       print(f"Token Scanned: {uid}")
+
+
+                       if uid in AUTHORIZED_UIDS:
+                           print(f"TOKEN AUTHORIZED. Perform circular gesture within {GESTURE_TIMEOUT} seconds...")
+                           ser.write(b'G')  # Send 'G' to request gesture data
+                           currentState = STATE_WAITING_FOR_GESTURE
+                           gesture_timeout_start = time.time()
+                       else:
+                           print("ACCESS DENIED. Unknown token.")
+                           ser.write(b'D')
+
+
+               # --- State 2: Waiting for Gesture ---
+               elif currentState == STATE_WAITING_FOR_GESTURE:
+                   if line.startswith("MPU:"):
+                       try:
+                           parts = line.split(":")[1].split(',')
+                           if len(parts) == 6:
+                               gyro_z = float(parts[5])
+
+
+                               # Print debug score
+                               if abs(gyro_z) > 0.5:
+                                   print(f"  ... (Gyro Z: {gyro_z:.2f})")
+
+
+                               # Check for the gesture
+                               if abs(gyro_z) > GESTURE_THRESHOLD:
+                                   print(f"GESTURE DETECTED! (Gyro Z: {gyro_z:.2f})")
+                                   print(f"ACCESS GRANTED. Unlocking for {UNLOCK_DURATION} seconds...")
+                                   ser.write(b'A')  # Send 'A' for Access
+                                   currentState = STATE_UNLOCKED
+                                   unlock_start_time = time.time()
+
+
+                       except (ValueError, IndexError):
+                           pass  # Ignore malformed MPU data
+
+
+               # --- State 3: Unlocked ---
+               # The timeout check at the top handles relocking.
+               elif currentState == STATE_UNLOCKED:
+                   pass
+
+
+   except KeyboardInterrupt:
+       print("\nProgram terminated by user.")
+   except serial.SerialException:
+       print("\nError: Arduino disconnected.")
+   finally:
+       if 'ser' in locals() and ser.is_open:
+           ser.write(b'D')  # Ensure it's locked before closing
+           ser.close()
+           print("Serial port closed.")
+
+
+
+
+if __name__ == "__main__":
+   main()
