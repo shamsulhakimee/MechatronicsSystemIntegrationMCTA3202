@@ -1,0 +1,52 @@
+
+
+import serial
+import time
+import sys
+
+# --- Configuration ---
+# IMPORTANT: Change this to the COM port your ESP32 is using when plugged in via USB.
+# (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux, '/dev/tty.SLAB_USBtoUART' on macOS)
+SERIAL_PORT = 'COM6'
+BAUD_RATE = 115200  # MUST MATCH the Serial.begin(115200) in the Arduino code
+
+
+def main():
+    ser = None
+
+    try:
+        # Establish connection to the USB Serial Port
+        ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+
+        # Wait a moment for the connection to fully initialize and for ESP32 to restart
+        time.sleep(2)
+
+        print(f"==================================================")
+        print(f"Connected to ESP32 USB Serial on {SERIAL_PORT} at {BAUD_RATE} baud.")
+        print(f"Data from ESP32 will be printed below:")
+        print(f"==================================================")
+
+        while True:
+            # Check for incoming data
+            if ser.in_waiting > 0:
+                # Read a line of data, decode it, and print it to the console
+                line = ser.readline().decode('utf-8', errors='ignore').strip()
+                if line:
+                    print(line)
+
+            # Use a small sleep to prevent the loop from hogging CPU resources
+            time.sleep(0.01)
+
+    except serial.SerialException as e:
+        print(f"Error connecting to the serial port: {e}", file=sys.stderr)
+        print("Ensure the ESP32 is plugged in via USB and the SERIAL_PORT is correct.", file=sys.stderr)
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user.")
+    finally:
+        if ser is not None and ser.is_open:
+            ser.close()
+            print("Serial connection closed.")
+
+
+if _name_ == "_main_":
+    main()
