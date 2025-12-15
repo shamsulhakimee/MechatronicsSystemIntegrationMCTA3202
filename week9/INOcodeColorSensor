@@ -1,0 +1,20 @@
+void setup() {
+  Serial.begin(9600);      // USB Serial Monitor (for debugging)
+  Serial1.begin(9600);     // Talk to Sunrom 1185 on Serial1
+
+  Serial.println("Listening to Sunrom 1185 on Serial1...");
+  delay(1000);
+}
+
+void loop() {
+  // Read data from sensor (TX-0 → Serial1 RX)
+  if (Serial1.available()) {
+    String data = Serial1.readStringUntil('\n');
+    data.trim();
+    
+    if (data.length() > 0) {
+      Serial.print("Color: ");
+      Serial.println(data);  // Forward to Serial Monitor
+    }
+  }
+}
