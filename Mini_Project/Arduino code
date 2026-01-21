@@ -1,0 +1,321 @@
+#include <Wire.h> 
+#include <LiquidCrystal_I2C.h>
+#include <Servo.h>
+
+// --- PIN DEFINITIONS ---
+const int M1_DIR = 4;
+const int M1_PWM = 5;
+const int BUZZER_PIN = 30; 
+
+// Water Sensor & RGB
+const int WATER_SENSOR_PIN = A15; 
+const int RGB_RED = 31; 
+const int RGB_GRN = 32; 
+const int RGB_BLU = 33; 
+
+// Buttons
+const int BTN_RESET = 22; 
+const int BTN_MODE1 = 24; 
+const int BTN_MODE2 = 26; 
+const int BTN_ACTN  = 28; 
+
+// LEDs (Status)
+const int LED_READY = 23; 
+const int LED_MODE1 = 25; 
+const int LED_MODE2 = 27; 
+const int LED_PAUSE = 29; 
+
+// Servo Lid Lock
+Servo lidServo;
+const int LID_SERVO_PIN = 6;  // PWM pin for servo
+const int LOCK_POS = 180;     // Locked position
+const int UNLOCK_POS = 0;     // Unlocked position
+
+// --- MUSIC NOTES ---
+#define NOTE_C5  523
+#define NOTE_E5  659
+#define NOTE_G5  784
+#define NOTE_A5  880
+#define NOTE_D5  587
+#define NOTE_B5  988
+
+// --- SETTINGS ---
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
+
+// Global Variables
+bool resetTriggered = false; 
+bool isPaused = false;
+int selectedMode = 0; 
+int currentModeLed = -1; 
+unsigned long lastBlinkTime = 0;
+bool ledState = LOW;
+
+// REMOTE FLAGS (Virtual Buttons)
+bool rem_M1 = false;
+bool rem_M2 = false;
+bool rem_ACTN = false;
+bool rem_RST = false;
+
+void setup() {
+  Serial.begin(9600);   
+  Serial1.begin(9600); // Communicate with ESP32
+  Serial1.setTimeout(50);
+  
+  pinMode(M1_DIR, OUTPUT);
+  pinMode(M1_PWM, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  pinMode(RGB_RED, OUTPUT);
+  pinMode(RGB_GRN, OUTPUT);
+  pinMode(RGB_BLU, OUTPUT);
+  
+  pinMode(WATER_SENSOR_PIN, INPUT);
+
+  pinMode(BTN_RESET, INPUT_PULLUP);
+  pinMode(BTN_MODE1, INPUT_PULLUP);
+  pinMode(BTN_MODE2, INPUT_PULLUP);
+  pinMode(BTN_ACTN,  INPUT_PULLUP);
+  
+  pinMode(LED_READY, OUTPUT);
+  pinMode(LED_MODE1, OUTPUT);
+  pinMode(LED_MODE2, OUTPUT);
+  pinMode(LED_PAUSE, OUTPUT);
+
+  // Servo setup
+  lidServo.attach(LID_SERVO_PIN);
+  lidServo.write(UNLOCK_POS); // start unlocked
+  
+  lcd.init();
+  lcd.backlight();
+  
+  // Startup Sound
+  tone(BUZZER_PIN, NOTE_C5, 100); delay(100);
+  tone(BUZZER_PIN, NOTE_E5, 100); delay(100);
+  tone(BUZZER_PIN, NOTE_G5, 200); delay(200);
+  
+  forceReset();
+}
+
+void loop() {
+  handleWaterSensor();
+  checkRemote(); // Check for Telegram commands
+
+  // 1. Check RESET (Physical OR Remote)
+  if (digitalRead(BTN_RESET) == LOW || rem_RST) {
+    rem_RST = false;
+    beep(); 
+    forceReset(); 
+    delay(300);
+  }
+
+  // 2. Mode Selection (Physical OR Remote)
+  if (digitalRead(BTN_MODE1) == LOW || rem_M1) {
+    rem_M1 = false; 
+    beep(); selectedMode = 1; displaySelection(1); delay(300); 
+  }
+  else if (digitalRead(BTN_MODE2) == LOW || rem_M2) {
+    rem_M2 = false;
+    beep(); selectedMode = 2; displaySelection(2); delay(300); 
+  }
+
+  // 3. Check START Button (Physical OR Remote)
+  if ((digitalRead(BTN_ACTN) == LOW || rem_ACTN) && selectedMode > 0) {
+    rem_ACTN = false;
+    beep(); runCycle(selectedMode); 
+    forceReset(); 
+  }
+}
+
+// --- READ TELEGRAM COMMANDS ---
+void checkRemote() {
+  if (Serial1.available()) {
+    String cmd = Serial1.readStringUntil('\n');
+    cmd.trim();
+    
+    if (cmd == "CMD_M1") rem_M1 = true;
+    else if (cmd == "CMD_M2") rem_M2 = true;
+    else if (cmd == "CMD_ACTN") rem_ACTN = true;
+    else if (cmd == "CMD_RST") rem_RST = true;
+  }
+}
+
+// --- WASHING LOGIC ---
+void runCycle(int mode) {
+  resetTriggered = false; 
+  digitalWrite(LED_READY, LOW); 
+  delay(500); 
+
+  int washTime = (mode == 1) ? 25 : 10;
+  int rinseTime = (mode == 1) ? 25 : 10;
+  currentModeLed = (mode == 1) ? LED_MODE1 : LED_MODE2;
+  
+  // === PHASE 1: WASH ===
+  int cycles = washTime / 5;
+  for(int i=0; i<cycles; i++) {
+    if(resetTriggered) return; 
+
+    // Lock lid when motor moves
+    lidServo.write(LOCK_POS);
+    delay(300);
+
+    updateLCD("WASHING...", washTime - (i*5));
+    
+    digitalWrite(M1_DIR, HIGH); analogWrite(M1_PWM, 180); smartDelay(2000); 
+    analogWrite(M1_PWM, 0); smartDelay(500);
+    digitalWrite(M1_DIR, LOW); analogWrite(M1_PWM, 180); smartDelay(2000); 
+    analogWrite(M1_PWM, 0); smartDelay(500);
+  }
+
+  // === PHASE 2: DRAIN ===
+  if(resetTriggered) return;
+  updateLCD("DRAINING...", 5);
+  lidServo.write(LOCK_POS);
+  delay(300);
+  analogWrite(M1_PWM, 0); 
+  smartDelay(5000);       
+
+  // === PHASE 3: SPIN ===
+  if(resetTriggered) return;
+  unsigned long startSpin = millis();
+  unsigned long duration = rinseTime * 1000UL;
+  lidServo.write(LOCK_POS);
+  delay(300);
+
+  digitalWrite(M1_DIR, HIGH);
+  analogWrite(M1_PWM, 255); 
+  
+  while(millis() - startSpin < duration) {
+     if(resetTriggered) return; 
+     int timeLeft = rinseTime - ((millis() - startSpin)/1000);
+     if (timeLeft % 1 == 0) updateLCD("SPINNING...", timeLeft);
+     smartDelay(100); 
+  }
+
+  // === FINISH ===
+  analogWrite(M1_PWM, 0);
+  lidServo.write(UNLOCK_POS); // unlock lid after cycle
+
+  if (!resetTriggered) {
+    lcd.clear(); lcd.print("CYCLE COMPLETE");
+    Serial1.println("DONE"); // Tell ESP32
+    playFinishMelody(); 
+    for(int k=0; k<5; k++) { 
+       digitalWrite(currentModeLed, HIGH); delay(200);
+       digitalWrite(currentModeLed, LOW); delay(200);
+       if(digitalRead(BTN_RESET)==LOW) return;
+    }
+  }
+}
+
+// --- HELPERS ---
+void handleWaterSensor() {
+  int waterLevel = analogRead(WATER_SENSOR_PIN);
+  if (waterLevel > 300) {
+    digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, HIGH);
+  } else {
+    digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, LOW);
+  }
+}
+
+void smartDelay(unsigned long ms) {
+  unsigned long start = millis();
+  while(millis() - start < ms) {
+    handleWaterSensor(); 
+    checkRemote();
+
+    // RESET
+    if (digitalRead(BTN_RESET) == LOW || rem_RST) { 
+      rem_RST = false;
+      beep(); resetTriggered = true; analogWrite(M1_PWM, 0); 
+      lidServo.write(UNLOCK_POS); // unlock lid
+      return; 
+    }
+    
+    // PAUSE
+    if (digitalRead(BTN_ACTN) == LOW || rem_ACTN) {
+      rem_ACTN = false;
+      beep(); delay(200); isPaused = !isPaused; 
+      if (isPaused) {
+        analogWrite(M1_PWM, 0); 
+        digitalWrite(LED_PAUSE, HIGH); 
+        lcd.setCursor(0, 0); lcd.print("SYSTEM PAUSED   ");
+        lidServo.write(UNLOCK_POS); // unlock lid
+        while (digitalRead(BTN_ACTN) == HIGH && !rem_ACTN && !rem_RST) {
+          handleWaterSensor(); 
+          checkRemote();
+        }
+        if (rem_RST || digitalRead(BTN_RESET) == LOW) { 
+            rem_RST = false; beep(); resetTriggered = true; return; 
+        }
+        rem_ACTN = false;
+        delay(200); digitalWrite(LED_PAUSE, LOW); isPaused = false;
+        lidServo.write(LOCK_POS); // relock lid
+      }
+    }
+
+    if (millis() - lastBlinkTime > 300) { 
+      lastBlinkTime = millis(); ledState = !ledState; digitalWrite(currentModeLed, ledState);
+    }
+  }
+}
+
+void displaySelection(int mode) {
+  digitalWrite(LED_MODE1, LOW); digitalWrite(LED_MODE2, LOW);
+  lcd.clear(); lcd.setCursor(0,0);
+  if (mode == 1) { lcd.print("Mode 1: Normal"); digitalWrite(LED_MODE1, HIGH); } 
+  else { lcd.print("Mode 2: Fast"); digitalWrite(LED_MODE2, HIGH); }
+  lcd.setCursor(0,1); lcd.print("Press BTN4 Start");
+}
+
+void forceReset() {
+  resetTriggered = false; isPaused = false; selectedMode = 0; 
+  analogWrite(M1_PWM, 0); 
+  digitalWrite(LED_MODE1, LOW); digitalWrite(LED_MODE2, LOW);
+  digitalWrite(LED_PAUSE, LOW); digitalWrite(LED_READY, HIGH); 
+  digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, LOW);
+  
+  lcd.clear(); lcd.setCursor(0,0); lcd.print("SYSTEM READY");
+  lcd.setCursor(0,1); lcd.print("Select Mode 1/2");
+  lidServo.write(UNLOCK_POS); // unlock lid
+}
+
+void beep() { tone(BUZZER_PIN, 2000, 50); }
+
+void playFinishMelody() {
+  int melody[] = { NOTE_D5, NOTE_G5, NOTE_G5, NOTE_A5, NOTE_D5, 0, NOTE_B5, NOTE_A5, NOTE_G5, NOTE_E5, NOTE_D5, 0, NOTE_G5, NOTE_B5, NOTE_D5, NOTE_E5, NOTE_D5 };
+  int durations[] = { 200, 200, 200, 200, 400, 100, 200, 200, 200, 200, 400, 100, 200, 200, 200, 200, 600 };
+  int colorIndex = 0;
+  for (int i = 0; i < 17; i++) {
+    checkRemote(); 
+    if (digitalRead(BTN_RESET) == LOW || rem_RST) { 
+      rem_RST = false; noTone(BUZZER_PIN); 
+      digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, LOW); 
+      lidServo.write(UNLOCK_POS); 
+      return; 
+    }
+    digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, LOW);
+    if (melody[i] != 0) {
+      int mix = colorIndex % 7;
+      switch(mix) {
+        case 0: digitalWrite(RGB_RED, HIGH); break; 
+        case 1: digitalWrite(RGB_RED, HIGH); digitalWrite(RGB_GRN, HIGH); break; 
+        case 2: digitalWrite(RGB_GRN, HIGH); break; 
+        case 3: digitalWrite(RGB_GRN, HIGH); digitalWrite(RGB_BLU, HIGH); break; 
+        case 4: digitalWrite(RGB_BLU, HIGH); break; 
+        case 5: digitalWrite(RGB_RED, HIGH); digitalWrite(RGB_BLU, HIGH); break; 
+        case 6: digitalWrite(RGB_RED, HIGH); digitalWrite(RGB_GRN, HIGH); digitalWrite(RGB_BLU, HIGH); break; 
+      }
+      tone(BUZZER_PIN, melody[i], durations[i]);
+      colorIndex++; 
+    } else { noTone(BUZZER_PIN); }
+    delay(durations[i]); 
+    digitalWrite(RGB_RED, LOW); digitalWrite(RGB_GRN, LOW); digitalWrite(RGB_BLU, LOW);
+    delay(durations[i] * 0.3);
+  }
+}
+
+void updateLCD(String status, int time) {
+  if (resetTriggered) return; 
+  lcd.setCursor(0, 0); lcd.print(status + "     ");
+  lcd.setCursor(0, 1); lcd.print("Time: " + String(time) + "s   ");
+}
