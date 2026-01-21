@@ -5,8 +5,8 @@
 // --- WIFI CONFIG ---
 const char* ssid = "Qash";
 const char* password = "Qaisya_040411";
-#define BOTtoken "7886553487:AAF-Ua2OxCQZfC0RrQ4GLDjO-2buTWbfhN8"
-#define CHAT_ID "980920316"
+#define BOTtoken "bot token here"
+#define CHAT_ID "chat id here"
 
 // --- UART CONFIG ---
 #define RXD2 16
