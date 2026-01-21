@@ -1,0 +1,87 @@
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <UniversalTelegramBot.h>
+
+// --- WIFI CONFIG ---
+const char* ssid = "Qash";
+const char* password = "Qaisya_040411";
+#define BOTtoken "7886553487:AAF-Ua2OxCQZfC0RrQ4GLDjO-2buTWbfhN8"
+#define CHAT_ID "980920316"
+
+// --- UART CONFIG ---
+#define RXD2 16
+#define TXD2 17
+
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOTtoken, client);
+
+unsigned long lastCheckTime = 0;
+const unsigned long checkInterval = 1000;
+
+// Custom Keyboard Layout
+String keyboardJson = "[[\"Mode 1 🧺\", \"Mode 2 🚀\"], [\"Start/Pause ⏯️\", \"Reset 🔄\"], [\"Status 📊\"]]";
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2); 
+  
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  Serial.println("\nWiFi Connected!");
+
+  client.setInsecure(); 
+  bot.sendMessageWithReplyKeyboard(CHAT_ID, "IoT Washer Online. Select Command:", "", keyboardJson, true);
+}
+
+void loop() {
+  // 1. LISTEN TO MEGA
+  if (Serial2.available()) {
+    String message = Serial2.readStringUntil('\n');
+    message.trim();
+    if (message == "DONE") {
+       bot.sendMessage(CHAT_ID, "✅ Cycle Complete! Collect Laundry.", "");
+    }
+  }
+
+  // 2. LISTEN TO TELEGRAM
+  if (millis() - lastCheckTime > checkInterval) {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    while (numNewMessages) {
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+    lastCheckTime = millis();
+  }
+}
+
+void handleNewMessages(int numNewMessages) {
+  for (int i = 0; i < numNewMessages; i++) {
+    String text = bot.messages[i].text;
+    String from_id = bot.messages[i].chat_id;
+    if (from_id != CHAT_ID) continue; 
+
+    // --- BUTTON MAPPING ---
+    if (text == "Mode 1 🧺") {
+      Serial2.println("CMD_M1"); // Send to Mega
+      bot.sendMessage(CHAT_ID, "Selected Mode 1. Press Start.", "");
+    }
+    else if (text == "Mode 2 🚀") {
+      Serial2.println("CMD_M2"); 
+      bot.sendMessage(CHAT_ID, "Selected Mode 2. Press Start.", "");
+    }
+    else if (text == "Start/Pause ⏯️") {
+      Serial2.println("CMD_ACTN"); 
+      bot.sendMessage(CHAT_ID, "Action Triggered (Start/Pause).", "");
+    }
+    else if (text == "Reset 🔄") {
+      Serial2.println("CMD_RST"); 
+      bot.sendMessage(CHAT_ID, "System Reset.", "");
+    }
+    else if (text == "Status 📊" || text == "/status") {
+      bot.sendMessage(CHAT_ID, "System Online & Listening.", "");
+    }
+    else {
+      bot.sendMessageWithReplyKeyboard(CHAT_ID, "Please use the buttons.", "", keyboardJson, true);
+    }
+  }
+}
